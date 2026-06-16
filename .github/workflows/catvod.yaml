@@ -17,13 +17,18 @@ jobs:
           distribution: temurin
 
       - id: get-project
-        name: Get project name
+        name: Get project git url
         run: echo "PROJECT=$(cat project-to-build)" >> $GITHUB_OUTPUT
 
-      - name: Clone project
+      - name: Clone android source
         run: git clone --depth=1 ${{ steps.get-project.outputs.PROJECT }} project
 
-      - name: Build the app
+      # 关键修复：自动生成缺失的local.properties
+      - name: Create local.properties
+        working-directory: ./project
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: Build APK
         working-directory: ./project
         run: |
           if [ ! -f "gradlew" ]; then gradle wrapper; fi
