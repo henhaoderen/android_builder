@@ -31,84 +31,67 @@ jobs:
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       # ========================================================
-      # 彻底清除所有阿里云镜像，只保留官方仓库
+      # 安全修复仓库：删除阿里云，添加官方源（保留原变量）
       # ========================================================
-      - name: Remove Aliyun and add official repositories
+      - name: Fix repositories (remove Aliyun, add official)
         working-directory: ./project
         run: |
-          # 1. 删除所有包含 maven.aliyun.com 的行
-          find . -name "*.gradle" -type f -exec sed -i '/maven.aliyun.com/d' {} \;
+          python3 << 'PYTHON_SCRIPT'
+          import re
+          import os
 
-          # 2. 处理根目录 build.gradle：强制替换 buildscript 和 allprojects 的 repositories
-          cat > build.gradle.new << 'EOF'
-          // 自动生成的官方仓库配置
-          buildscript {
-              repositories {
-                  google()
-                  mavenCentral()
-                  maven { url 'https://jitpack.io' }
-              }
-              dependencies {
-                  // 请确保 classpath 与项目一致，此处保留原有声明（后续会追加）
-              }
-          }
+          def fix_repositories(filepath):
+              if not os.path.exists(filepath):
+                  return
+              with open(filepath, 'r', encoding='utf-8') as f:
+                  content = f.read()
 
-          allprojects {
-              repositories {
-                  google()
-                  mavenCentral()
-                  maven { url 'https://jitpack.io' }
-              }
-          }
-          EOF
+              # 1. 删除所有包含 maven.aliyun.com 的行
+              content = re.sub(r'(?m)^\s*.*maven\.aliyun\.com.*$\n?', '', content)
 
-          # 提取原文件中的 dependencies 部分（保留 classpath）
-          if grep -q 'dependencies {' build.gradle; then
-              sed -n '/dependencies {/,/}/p' build.gradle > deps.gradle
-              # 将 deps.gradle 内容插入到 build.gradle.new 的 buildscript 块中
-              sed -i '/dependencies {/r deps.gradle' build.gradle.new
-              rm deps.gradle
-          fi
+              # 2. 定义需要确保存在的仓库条目
+              entries = [
+                  'google()',
+                  'mavenCentral()',
+                  "maven { url 'https://jitpack.io' }"
+              ]
 
-          # 覆盖原 build.gradle
-          mv build.gradle.new build.gradle
+              # 3. 处理 buildscript 和 allprojects 中的 repositories 块
+              def add_missing_repos(match):
+                  block = match.group(0)
+                  missing = []
+                  for entry in entries:
+                      if entry not in block:
+                          missing.append(entry)
+                  if missing:
+                      indent = '        '  # 假设缩进为 8 个空格，可根据实际情况调整
+                      insert_lines = '\n' + indent + ('\n' + indent).join(missing)
+                      block = block.rstrip()[:-1] + insert_lines + '\n    }'
+                  return block
 
-          # 3. 处理 settings.gradle（如果有）
-          if [ -f settings.gradle ]; then
-              # 删除所有阿里云行
-              sed -i '/maven.aliyun.com/d' settings.gradle
-              # 如果存在 dependencyResolutionManagement，替换其 repositories
-              if grep -q 'dependencyResolutionManagement' settings.gradle; then
-                  sed -i '/dependencyResolutionManagement/,/repositories {/c\
-          dependencyResolutionManagement {\
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)\
-              repositories {\
-                  google()\
-                  mavenCentral()\
-                  maven { url "https://jitpack.io" }\
-              }\
-          }' settings.gradle
-              else
-                  # 没有则追加
-                  cat >> settings.gradle << 'EOF'
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-                  maven { url 'https://jitpack.io' }
-              }
-          }
-          EOF
-              fi
-          fi
+              # 处理 buildscript 块
+              pattern = r'(buildscript\s*\{[^}]*repositories\s*\{[^}]*\})'
+              content = re.sub(pattern, add_missing_repos, content, flags=re.DOTALL)
 
-          # 4. 清理子模块中独立的 repositories（避免冲突）
-          for mod in app pyramid; do
-              if [ -f "$mod/build.gradle" ]; then
-                  sed -i '/repositories {/,/}/d' "$mod/build.gradle"
-              fi
-          done
+              # 处理 allprojects 块
+              pattern = r'(allprojects\s*\{[^}]*repositories\s*\{[^}]*\})'
+              content = re.sub(pattern, add_missing_repos, content, flags=re.DOTALL)
+
+              # 处理 settings.gradle 中的 dependencyResolutionManagement
+              if 'settings.gradle' in filepath:
+                  pattern = r'(dependencyResolutionManagement\s*\{[^}]*repositories\s*\{[^}]*\})'
+                  content = re.sub(pattern, add_missing_repos, content, flags=re.DOTALL)
+
+              with open(filepath, 'w', encoding='utf-8') as f:
+                  f.write(content)
+
+          # 处理主要文件
+          fix_repositories('build.gradle')
+          fix_repositories('settings.gradle')
+          # 处理子模块（如果存在）
+          for mod in ['app', 'pyramid']:
+              fix_repositories(f'{mod}/build.gradle')
+          PYTHON_SCRIPT
 
       # ========================================================
       # 修复 Chaquo Python 路径（Windows → Linux）
