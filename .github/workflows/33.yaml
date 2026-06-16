@@ -31,13 +31,28 @@ jobs:
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       # ========================================================
-      # 覆盖所有 repositories，只使用官方仓库（无阿里云镜像）
+      # 彻底清除所有阿里云镜像，只保留官方仓库
       # ========================================================
-      - name: Override repositories with official sources
+      - name: Remove Aliyun and add official repositories
         working-directory: ./project
         run: |
-          # 定义标准仓库配置（官方 Google、Maven Central、JitPack）
-          cat > repos.gradle << 'EOF'
+          # 1. 删除所有包含 maven.aliyun.com 的行
+          find . -name "*.gradle" -type f -exec sed -i '/maven.aliyun.com/d' {} \;
+
+          # 2. 处理根目录 build.gradle：强制替换 buildscript 和 allprojects 的 repositories
+          cat > build.gradle.new << 'EOF'
+          // 自动生成的官方仓库配置
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven { url 'https://jitpack.io' }
+              }
+              dependencies {
+                  // 请确保 classpath 与项目一致，此处保留原有声明（后续会追加）
+              }
+          }
+
           allprojects {
               repositories {
                   google()
@@ -47,24 +62,35 @@ jobs:
           }
           EOF
 
-          # 处理根目录 build.gradle
-          if grep -q '^allprojects' build.gradle; then
-              sed -i '/^allprojects/,/^}/c\
-          allprojects {\
+          # 提取原文件中的 dependencies 部分（保留 classpath）
+          if grep -q 'dependencies {' build.gradle; then
+              sed -n '/dependencies {/,/}/p' build.gradle > deps.gradle
+              # 将 deps.gradle 内容插入到 build.gradle.new 的 buildscript 块中
+              sed -i '/dependencies {/r deps.gradle' build.gradle.new
+              rm deps.gradle
+          fi
+
+          # 覆盖原 build.gradle
+          mv build.gradle.new build.gradle
+
+          # 3. 处理 settings.gradle（如果有）
+          if [ -f settings.gradle ]; then
+              # 删除所有阿里云行
+              sed -i '/maven.aliyun.com/d' settings.gradle
+              # 如果存在 dependencyResolutionManagement，替换其 repositories
+              if grep -q 'dependencyResolutionManagement' settings.gradle; then
+                  sed -i '/dependencyResolutionManagement/,/repositories {/c\
+          dependencyResolutionManagement {\
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)\
               repositories {\
                   google()\
                   mavenCentral()\
                   maven { url "https://jitpack.io" }\
               }\
-          }' build.gradle
-          else
-              cat repos.gradle >> build.gradle
-          fi
-
-          # 处理 settings.gradle（如果有 dependencyResolutionManagement）
-          if [ -f settings.gradle ]; then
-              sed -i '/dependencyResolutionManagement/,/}/d' settings.gradle
-              cat >> settings.gradle << 'EOF'
+          }' settings.gradle
+              else
+                  # 没有则追加
+                  cat >> settings.gradle << 'EOF'
           dependencyResolutionManagement {
               repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
               repositories {
@@ -74,16 +100,15 @@ jobs:
               }
           }
           EOF
+              fi
           fi
 
-          # 清理子模块中的独立 repositories 块（避免冲突）
+          # 4. 清理子模块中独立的 repositories（避免冲突）
           for mod in app pyramid; do
               if [ -f "$mod/build.gradle" ]; then
                   sed -i '/repositories {/,/}/d' "$mod/build.gradle"
               fi
           done
-
-          rm -f repos.gradle
 
       # ========================================================
       # 修复 Chaquo Python 路径（Windows → Linux）
