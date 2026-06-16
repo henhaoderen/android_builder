@@ -31,60 +31,63 @@ jobs:
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       # ========================================================
-      # 彻底修复 Maven 仓库配置（覆盖所有 repositories 块）
+      # 覆盖所有 repositories，只使用官方仓库（无阿里云镜像）
       # ========================================================
-      - name: Override all repositories to official Maven/Google
+      - name: Override repositories with official sources
         working-directory: ./project
         run: |
-          # 1. 覆盖根目录 build.gradle 中的 allprojects / subprojects
-          cat > build.gradle.override << 'EOF'
+          # 定义标准仓库配置（官方 Google、Maven Central、JitPack）
+          cat > repos.gradle << 'EOF'
           allprojects {
               repositories {
                   google()
                   mavenCentral()
+                  maven { url 'https://jitpack.io' }
               }
           }
-
-          // 保留原始 build.gradle 的其他内容（如 buildscript、插件声明等）
-          // 下面将原文件内容追加到这个文件之后
           EOF
 
-          # 备份原 build.gradle，然后合并
-          cp build.gradle build.gradle.bak
-          # 提取原文件中不包含 allprojects 块的内容（避免重复）
-          # 更简单的方法：将原文件中的 allprojects 块替换掉
+          # 处理根目录 build.gradle
           if grep -q '^allprojects' build.gradle; then
-              # 删除原有的 allprojects 块（从 allprojects 到匹配的 } 假设是顶级块）
               sed -i '/^allprojects/,/^}/c\
           allprojects {\
               repositories {\
                   google()\
                   mavenCentral()\
+                  maven { url "https://jitpack.io" }\
               }\
           }' build.gradle
           else
-              # 如果没有 allprojects，则追加
-              cat build.gradle.override > build.gradle.new
-              cat build.gradle >> build.gradle.new
-              mv build.gradle.new build.gradle
+              cat repos.gradle >> build.gradle
           fi
-          rm -f build.gradle.override
 
-          # 2. 修复 settings.gradle（如果有 dependencyResolutionManagement）
+          # 处理 settings.gradle（如果有 dependencyResolutionManagement）
           if [ -f settings.gradle ]; then
-              # 删除所有现有的 maven 仓库定义（包括阿里云等）
-              sed -i '/maven {/,/}/d' settings.gradle
-              # 确保 repositories 块中只有 google 和 mavenCentral
-              sed -i '/repositories {/a\        google()\n        mavenCentral()' settings.gradle
+              sed -i '/dependencyResolutionManagement/,/}/d' settings.gradle
+              cat >> settings.gradle << 'EOF'
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven { url 'https://jitpack.io' }
+              }
+          }
+          EOF
           fi
 
-          # 3. 同样处理 app/build.gradle 和 pyramid/build.gradle（避免残留）
+          # 清理子模块中的独立 repositories 块（避免冲突）
           for mod in app pyramid; do
               if [ -f "$mod/build.gradle" ]; then
-                  sed -i '/repositories {/,/}/c\    repositories {\n        google()\n        mavenCentral()\n    }' "$mod/build.gradle"
+                  sed -i '/repositories {/,/}/d' "$mod/build.gradle"
               fi
           done
 
+          rm -f repos.gradle
+
+      # ========================================================
+      # 修复 Chaquo Python 路径（Windows → Linux）
+      # ========================================================
       - name: Fix Chaquo Python Path
         working-directory: ./project
         run: |
